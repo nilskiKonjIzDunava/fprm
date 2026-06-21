@@ -40,9 +40,11 @@ uv run python dataset/build_maze_dataset.py \
 
 ### 2. Train
 
-`pretrain.py` is the (Hydra) training entrypoint; the reproduced experiment configs live in `config/`.
+`pretrain.py` is the (Hydra) training entrypoint; the reproduced experiment configs live in `config/`. `arch=fprm` is the paper's model; `trm`, `trm_singlez`, `trm_hier6`, `hrm`, and `transformers_baseline` are also available. `global_batch_size=768` is fixed regardless of GPU count, so results match across these configurations. Sudoku trains on a single GPU as shown below. Maze on multiple GPUs. For the multi-seed runs, set `seed=0`, `seed=1`, `seed=2`.
 
-Sudoku fits on a single GPU:
+#### Single-GPU (Sudoku)
+
+The Sudoku config uses `n_backwards_L=6` for 81 tokens per sequence, which fits in a single 40 GB GPU at `global_batch_size=768`. So you can train it without `torchrun`:
 
 ```bash
 uv run python pretrain.py --config-name cfg_pretrain_sudoku
@@ -55,11 +57,9 @@ uv run python pretrain.py --config-name cfg_pretrain_sudoku \
     seed=1 +project_name=fprm-sudoku +run_name=my-run +checkpoint_path=checkpoints/my-run
 ```
 
-`arch=fprm` is the paper's model; `trm`, `trm_singlez`, `trm_hier6`, `hrm`, and `transformers_baseline` are also available.
-
 #### Multi-GPU (Maze)
 
-The Maze config uses `n_backwards_L=6`, which exceeds a single 40 GB GPU at `global_batch_size=768`. Train it across multiple GPUs with `torchrun` — e.g. 4× A100-80GB on one node, or 8× A100-40GB across two:
+The Maze config uses `n_backwards_L=6` for 900 tokens per sequence, which exceeds a single 40 GB GPU at `global_batch_size=768`. Train it across multiple GPUs with `torchrun` — e.g. 4× A100-80GB on one node, or 8× A100-40GB across two:
 
 ```bash
 # 1 node, 4 GPUs
@@ -71,8 +71,6 @@ torchrun --nnodes=2 --nproc-per-node=4 \
     --rdzv-backend=c10d --rdzv-endpoint="$HEAD_NODE:29850" \
     pretrain.py --config-name cfg_pretrain_maze
 ```
-
-`global_batch_size=768` is fixed regardless of GPU count, so results match across these configurations. Sudoku trains on a single GPU as shown above. For the multi-seed runs, set `seed=0`, `seed=1`, `seed=2`.
 
 ## Citation
 
