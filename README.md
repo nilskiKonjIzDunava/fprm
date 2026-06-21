@@ -1,6 +1,12 @@
 # fprm
 This code accompanies the paper:\
-\[[arXiv](https://neurips.cc/)\] \[[Fixed-Point Reasoners: Stable and Adaptive Deep Looped Transformers](https://arxiv.org/abs/2606.18206)\]\
+\[[Fixed-Point Reasoners: Stable and Adaptive Deep Looped Transformers](https://arxiv.org/abs/2606.18206)\]
+
+<p align="center">
+  <img src="fig1.png" width="760" alt="FPRM vs. TRM: Sudoku-Extreme accuracy vs. compute across difficulty">
+  <br>
+  <em>FPRM vs. TRM on Sudoku-Extreme: despite being non-hierarchical, FPRM scales better with compute and halts at the right point via fixed-points.</em>
+</p>
 
 ## Installation
 
