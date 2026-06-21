@@ -1,0 +1,31 @@
+# Python build / packaging artifacts
+*.egg-info/
+build/
+
+# Byte-compiled / cache
+__pycache__/
+*.py[cod]
+.cache/
+
+# uv / virtual env (uv.lock is tracked for reproducible installs)
+.venv/
+
+# Editors / tooling
+.cursor/
+.claude/
+
+# Datasets, checkpoints, and run outputs (user-generated, not shipped)
+data/
+checkpoints/
+outputs/
+runs/
+results/
+logs/
+*.log
+wandb/
+figs/
+figures/
+tmp/
+
+# Cluster launch scripts (kept local; reproduce via config/ + torchrun — see README)
+train_fprm_*.sh

@@ -1,0 +1,55 @@
+# State-tracking (group word problem) pretraining config.
+#
+# Build the dataset first with:
+#   uv run python dataset/build_state_tracking_dataset.py \
+#       --group S5 --k_train 20 --k_eval_max 50 --output_dir data/state_tracking-S5
+
+defaults:
+  - arch: trm
+  - _self_
+
+hydra:
+  output_subdir: null
+
+# State tracking is a left-to-right composition: the state at position k must
+# only depend on operations 0..k. Use a causal attention mask so prefix-k
+# accuracy from a single forward is well-defined.
+arch:
+  causal: true
+
+data_paths: ['data/state_tracking-S5']
+data_paths_test: []
+
+evaluators: []
+
+global_batch_size: 512
+
+epochs: 5
+eval_interval: 1
+checkpoint_every_eval: True
+
+k_eval_min: 2
+k_eval_max: 128
+k_eval_step: 1
+
+lr: 1e-4
+lr_min_ratio: 1.0
+lr_warmup_steps: 0
+
+beta1: 0.9
+beta2: 0.95
+weight_decay: 0.1
+puzzle_emb_weight_decay: 0.1
+
+optimizer: adamw
+
+puzzle_emb_lr: 1e-2
+
+seed: 0
+min_eval_interval: 0
+
+ema: False
+ema_rate: 0.999
+freeze_weights: False
+
+profile_flops: False

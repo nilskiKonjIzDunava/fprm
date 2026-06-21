@@ -1,0 +1,91 @@
+# FPRM on Sudoku-Extreme.
+#
+# Launch with:
+#   python pretrain.py --config-name cfg_pretrain_sudoku
+# (set per-run bookkeeping at launch, e.g.
+#    seed=1 +project_name=fprm-sudoku +run_name=... +checkpoint_path=...)
+#
+# Build the dataset first: data/sudoku-extreme-1k-aug-1000
+
+defaults:
+  - arch: fprm
+  - _self_
+
+hydra:
+  output_subdir: null
+
+# Data
+data_paths: ['data/sudoku-extreme-1k-aug-1000']
+data_paths_test: []
+evaluators: []
+
+# Training
+global_batch_size: 768
+epochs: 60000
+eval_interval: 5000
+
+optimizer: adamw
+lr: 1e-3
+lr_min_ratio: 1.0
+lr_warmup_steps: 2000
+weight_decay: 0.001
+beta1: 0.9
+beta2: 0.95
+
+puzzle_emb_lr: 1e-3
+puzzle_emb_weight_decay: 0.001
+
+seed: 0
+ema: true
+ema_rate: 0.999
+checkpoint_every_eval: true
+min_eval_interval: 0
+freeze_weights: false
+profile_flops: false
+
+# Architecture (overrides config/arch/fprm.yaml)
+arch:
+  H_cycles: 3
+  L_cycles: 6
+  H_layers: 0
+  L_layers: 2
+  n_backwards_L: 6
+
+  hidden_size: 512
+  num_heads: 8
+  expansion: 4
+  puzzle_emb_len: 16
+  pos_encodings: rope
+
+  max_iter: 12
+  max_iter_dist: det
+  max_iter_eval: 1000
+
+  alpha_1_init: 0.75
+  alpha_2_init: 0.25
+  residual_scale: input-independent
+  outer_only: false
+  norm_type: pre-norm
+  norm_placement: none
+
+  conv_type: conv2d
+  conv_kernel_size: 3
+  conv_bias: false
+
+  fp_thresh: 0.1
+  stepsize: 1.0
+  stepsize_decay: 0.99
+  decay_patience: 5
+  init_std: 6.0
+
+  softmax_temp: 1.0
+  mlp_t: false
+  no_ACT_continue: true
+  normalize_input_injection: false
+  variational_dropout: 0.0
+  weight_dropout: 0.0
+
+  loss:
+    loss_type: stablemax_cross_entropy
+    q_loss_coeff: 0.5
+    deep_supervision: true

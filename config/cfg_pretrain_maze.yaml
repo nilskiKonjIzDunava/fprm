@@ -1,0 +1,100 @@
+# FPRM on Maze-Hard (30x30).
+#
+# Launch with torchrun across multiple GPUs (n_backwards_L=6 at batch 768
+# exceeds a single 40 GB GPU; use e.g. 4x A100-80GB or 8x A100-40GB):
+#   torchrun --standalone --nproc-per-node=4 pretrain.py --config-name cfg_pretrain_maze
+#
+# >>> CRITICAL DATA NOTE <<<
+# Train on the NON-augmented build (data/maze-30x30-hard-1k-noaug); the 8x
+# dihedral-augmented build (data/maze-30x30-hard-1k) collapses to ~5%.
+
+defaults:
+  - arch: fprm
+  - _self_
+
+hydra:
+  output_subdir: null
+
+# Data (NON-augmented — see note above)
+data_paths: ['data/maze-30x30-hard-1k-noaug']
+data_paths_test: []
+evaluators: []
+
+# Training
+global_batch_size: 768
+epochs: 60000
+eval_interval: 5000
+min_eval_interval: 0
+checkpoint_every_eval: true
+
+optimizer: adamw
+lr: 1e-4
+lr_min_ratio: 1.0
+lr_warmup_steps: 2000
+weight_decay: 1.0
+beta1: 0.9
+beta2: 0.95
+
+puzzle_emb_lr: 1e-2
+puzzle_emb_weight_decay: 1.0
+
+seed: 0
+ema: true
+ema_rate: 0.999
+freeze_weights: false
+profile_flops: false
+
+# Architecture (overrides config/arch/fprm.yaml)
+arch:
+  H_cycles: 3
+  H_layers: 0
+  L_cycles: 6
+  L_layers: 2
+  n_backwards_L: 6
+
+  hidden_size: 512
+  num_heads: 8
+  expansion: 4
+  puzzle_emb_len: 16
+  puzzle_emb_ndim: 512
+  pos_encodings: rope
+  forward_dtype: bfloat16
+
+  max_iter: 24
+  max_iter_dist: det
+  max_iter_eval: 1000
+
+  alpha_1_init: 0.75
+  alpha_2_init: 0.25
+  residual_scale: input-independent
+  outer_only: false
+  norm_type: pre-norm
+  norm_placement: output
+
+  conv_type: conv1d
+  conv_kernel_size: 4
+  conv_bias: false
+
+  fp_thresh: 0.1
+  outlier_quantile: 0.25
+  stepsize: 1.0
+  stepsize_decay: 0.99
+  decay_patience: 5
+  eps: 1.0e-8
+  init_std: 6.0
+  additive_noise_std: 0.0
+
+  gamma_alpha: 4.0
+  gamma_scale: 16.6666666667
+  expon_scale: 72.1347520444
+  n_decode_steps: 0
+
+  softmax_temp: 1.0
+  mlp_t: false
+  no_ACT_continue: true
+  normalize_input_injection: false
+
+  loss:
+    loss_type: stablemax_cross_entropy
+    q_loss_coeff: 0.5
+    deep_supervision: true

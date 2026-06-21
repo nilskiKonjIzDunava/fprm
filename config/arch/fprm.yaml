@@ -1,0 +1,67 @@
+name: fixed_point_reasoning.fprm@FixedPointReasoningModel_ACTV1
+loss:
+  name: losses@ACTLossHead
+  loss_type: stablemax_cross_entropy
+  q_loss_coeff: 0.5
+  deep_supervision: true
+  jacobian_reg_lambda: 0.0
+
+H_cycles: 3
+L_cycles: 6
+
+H_layers: 0
+L_layers: 2
+
+max_iter: 1000
+max_iter_eval: null
+n_backwards_L: ${.L_cycles}
+
+hidden_size: 512
+num_heads: 8
+expansion: 4
+
+puzzle_emb_ndim: ${.hidden_size}
+
+pos_encodings: rope
+forward_dtype: bfloat16
+
+mlp_t: False
+puzzle_emb_len: 16
+no_ACT_continue: True
+
+fp_thresh: 0.1
+outlier_quantile: 0.25
+stepsize: 1.0
+stepsize_decay: 0.9
+decay_patience: 5
+eps: 1.0e-8
+init_std: 1.0
+additive_noise_std: 0.0
+fixed_init: false
+max_iter_dist: expon
+gamma_alpha: 4.0
+gamma_scale: 16.6666666667
+expon_scale: 72.1347520444
+
+conv_type: conv1d
+conv_kernel_size: 4
+conv_bias: false
+
+residual_scale: input-independent
+alpha_1_init: 0.5
+alpha_2_init: 0.5
+outer_only: false
+norm_placement: none
+norm_type: pre-norm
+
+normalize_input_injection: False
+
+softmax_temp: 1.0
+
+n_decode_steps: 0
+weight_dropout: 0.0
+variational_dropout: 0.0
+
+jacobian_reg: fda
+n_jacobian_samples: 0
+jacobian_eps: 1.0e-3
