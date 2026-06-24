@@ -38,7 +38,12 @@ class FPRMConfig(ReasoningModelConfig):
     fp_thresh: float = 0.1
     outlier_quantile: float = 0.25
     stepsize: float = 1.0
-    stepsize_decay: float = 0.9
+    # Separate FP stepsize-decay rates for training vs eval. The optimizer
+    # picks by self.training, so training-time eval (and inference) can use a
+    # different (typically slower) decay than training without a separate
+    # script — the eval curves logged to W&B reflect stepsize_decay_eval.
+    stepsize_decay_train: float = 0.9
+    stepsize_decay_eval: float = 0.99
     decay_patience: int = 5
     eps: float = 1e-8
     # Std of the truncated-normal init for the FP iterate y at carry reset.

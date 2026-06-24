@@ -32,7 +32,8 @@ no_ACT_continue: True
 fp_thresh: 0.1
 outlier_quantile: 0.25
 stepsize: 1.0
-stepsize_decay: 0.9
+stepsize_decay_train: 0.9
+stepsize_decay_eval: 0.99
 decay_patience: 5
 eps: 1.0e-8
 init_std: 1.0

@@ -29,3 +29,7 @@ tmp/
 
 # Cluster launch scripts (kept local; reproduce via config/ + torchrun — see README)
 train_fprm_*.sh
+
+# Test-time-scaling eval tools (research-only; not part of the published recipe)
+eval_sweep.sh
+singlez_eval_sweep.py

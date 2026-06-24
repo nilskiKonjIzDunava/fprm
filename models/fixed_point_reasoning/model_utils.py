@@ -21,7 +21,8 @@ class FixedPointOptimizer(nn.Module):
         super().__init__()
 
         self.stepsize = config.stepsize
-        self.stepsize_decay = config.stepsize_decay
+        self.stepsize_decay_train = config.stepsize_decay_train
+        self.stepsize_decay_eval = config.stepsize_decay_eval
         self.decay_patience = config.decay_patience
         self.eps = config.eps
         self.outlier_quantile = config.outlier_quantile
@@ -91,9 +92,7 @@ class FixedPointOptimizer(nn.Module):
             stepsize = stepsize.to(state_dtype)
         state['y'] = y * stepsize + state['y'] * (1 - stepsize) + self.additive_noise_std * torch.randn_like(state['y'])
 
-        # Track per-sample best iterate; require improvement of at least 0.01
-        # so slow monotonic drift doesn't keep resetting patience.
-        improved = residues < state['best_residues'] - 1e-2
+        improved = residues < state['best_residues']
 
         # update patience and lowest residue
         state['residues'] = residues
@@ -104,8 +103,9 @@ class FixedPointOptimizer(nn.Module):
         adapt = (state['patience'] <= 0) & (state['residues'] >= self.fp_thresh)
         state['patience'] = torch.where(adapt, self.decay_patience, state['patience'])
         stepsize_dtype = state['stepsize'].dtype
-        # if not self.training:
-        state['stepsize'] = state['stepsize'] * torch.where(adapt, self.stepsize_decay, 1).to(stepsize_dtype).reshape(-1, 1, 1)
+        # Separate train/eval decay (selected by module mode set via model.train()/eval()).
+        decay = self.stepsize_decay_train if self.training else self.stepsize_decay_eval
+        state['stepsize'] = state['stepsize'] * torch.where(adapt, decay, 1).to(stepsize_dtype).reshape(-1, 1, 1)
 
         state['iter_idx'] = state['iter_idx'] + 1
         return state
