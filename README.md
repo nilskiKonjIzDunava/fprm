@@ -36,6 +36,17 @@ uv run python dataset/build_sudoku_dataset.py \
 # Maze-Hard 30x30: non-augmented (the default; the 8x augmented build collapses to ~5%)
 uv run python dataset/build_maze_dataset.py \
     --output-dir data/maze-30x30-hard-1k-noaug
+
+# State-tracking: generated locally from the permutation group (no download).
+# A5 (alternating group) and S5 (symmetric group), 2M training sequences each,
+# trained at length 32 and evaluated on prefixes up to 128.
+uv run python dataset/build_state_tracking_dataset.py \
+    --group A5 --k-train 32 --k-eval-max 128 --train-samples 2000000 \
+    --output-dir data/state_tracking-A5-train32-eval128-2M
+
+uv run python dataset/build_state_tracking_dataset.py \
+    --group S5 --k-train 32 --k-eval-max 128 --train-samples 2000000 \
+    --output-dir data/state_tracking-S5-train32-eval128-2M
 ```
 
 ### 2. Train
@@ -70,6 +81,31 @@ torchrun --standalone --nproc-per-node=4 \
 torchrun --nnodes=2 --nproc-per-node=4 \
     --rdzv-backend=c10d --rdzv-endpoint="$HEAD_NODE:29850" \
     pretrain.py --config-name cfg_pretrain_maze
+```
+
+#### Single-GPU (State tracking)
+
+State tracking has one config per group — `cfg_pretrain_state_tracking_fprm_a5`
+(alternating group A5) and `cfg_pretrain_state_tracking_fprm_s5` (symmetric group
+S5). Both are small (hidden 512, 2 L-layers, causal attention, no puzzle embedding,
+no positional encoding) and train on a single 40 GB GPU at `global_batch_size=1024`:
+
+```bash
+# A5
+uv run python pretrain.py --config-name cfg_pretrain_state_tracking_fprm_a5
+
+# S5
+uv run python pretrain.py --config-name cfg_pretrain_state_tracking_fprm_s5
+```
+
+The two configs are identical except for the group-specific settings baked in:
+`data_paths`, `arch.decay_patience` (A5: 5, S5: 10), and `arch.stepsize_decay_train`
+(A5: 0.90, S5: 0.95). As above, override the seed and W&B bookkeeping on the command
+line for multi-seed runs:
+
+```bash
+uv run python pretrain.py --config-name cfg_pretrain_state_tracking_fprm_s5 \
+    seed=1 +project_name=fprm-state-tracking +run_name=my-run +checkpoint_path=checkpoints/my-run
 ```
 
 ## Citation

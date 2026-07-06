@@ -1,0 +1,145 @@
+# FPRM on state-tracking (group word problem), single-z fixed-point model.
+#
+# Reproduces the "FPTRM-singlez" length-generalisation results from the
+# original codebase (per_k_bundle / configs/fptrm_all_config.yaml). Train on
+# short sequences (len 32), evaluate on longer prefixes (up to 128) under a
+# causal mask, with the FP-solver compute budget matched to the TRM baseline.
+#
+# Build the dataset first (A5, train_len=32, eval_len=128, 2M train samples):
+#   uv run python dataset/build_state_tracking_dataset.py \
+#       --group A5 --k-train 32 --k-eval-max 128 --train-samples 2000000 \
+#       --output-dir data/state_tracking-A5-train32-eval128-2M
+#
+# Launch with:
+#   python pretrain.py --config-name cfg_pretrain_state_tracking_fprm_a5
+# (set per-run bookkeeping at launch, e.g.
+#    seed=1 +project_name=fprm-state-tracking +run_name=... +checkpoint_path=...)
+#
+# >>> A5 config <<<
+# S5 now has its own file: cfg_pretrain_state_tracking_fprm_s5.yaml
+# (S5 data, decay_patience 10, stepsize_decay_train 0.95 — the S5 sweep winner).
+# A5 reproduces with the settings below (stepsize_decay_train 0.90, patience 5).
+
+defaults:
+  - arch: fprm
+  - _self_
+
+hydra:
+  output_subdir: null
+
+# Data
+data_paths: ['data/state_tracking-A5-train32-eval128-2M']
+data_paths_test: []
+evaluators: []
+
+# Training
+#
+# NOTE: the original used the adam_atan2 optimizer; this repo only ships adamw
+# (the same substitution already made for the sudoku/maze configs).
+global_batch_size: 1024
+epochs: 50
+eval_interval: 50
+min_eval_interval: 0
+checkpoint_every_eval: true
+
+optimizer: adamw
+lr: 1e-4
+lr_min_ratio: 1.0
+lr_warmup_steps: 0
+weight_decay: 0.01
+beta1: 0.9
+beta2: 0.95
+
+# Puzzle embeddings are disabled (puzzle_emb_len/ndim = 0 below), so no sparse
+# embedding optimizer is built and these two are inert — kept only because
+# PretrainConfig requires them.
+puzzle_emb_lr: 1e-2
+puzzle_emb_weight_decay: 0.01
+
+seed: 1
+ema: false
+ema_rate: 0.999
+freeze_weights: false
+profile_flops: false
+
+# Length-generalisation eval grid: one causal forward per batch, per-k seq-acc
+# read off at prefix lengths range(k_eval_min, k_eval_max + 1, k_eval_step).
+k_eval_min: 2
+k_eval_max: 128
+k_eval_step: 4
+
+# Architecture (overrides config/arch/fprm.yaml)
+arch:
+  # Left-to-right composition: state at position k depends only on ops 0..k.
+  causal: true
+
+  H_cycles: 3
+  H_layers: 0
+  L_cycles: 4
+  L_layers: 2
+  n_backwards_L: 4
+
+  hidden_size: 512
+  num_heads: 8
+  expansion: 4
+
+  # No puzzle embedding and no positional encoding (clean length generalisation).
+  puzzle_emb_len: 0
+  puzzle_emb_ndim: 0
+  pos_encodings: none
+  forward_dtype: bfloat16
+
+  # Fixed-point solver. Train for 128 iters; eval at 160 = the TRM-baseline
+  # compute budget (16 ACT segments x 10 L-level calls/segment), so all model
+  # families share the same per-sample ceiling (see bundle README "Budget match").
+  max_iter: 128
+  max_iter_eval: 160
+  max_iter_dist: det
+
+  # Residual-mix init set to the sudoku/maze values (per-experiment choice);
+  # the original state-tracking used 0.5 / 0.5.
+  alpha_1_init: 0.5
+  alpha_2_init: 0.5
+  residual_scale: input-independent
+  outer_only: false
+  norm_type: pre-norm
+  norm_placement: none
+
+  conv_type: conv1d
+  conv_kernel_size: 4
+  conv_bias: false
+
+  fp_thresh: 0.1
+  outlier_quantile: 0.25
+  stepsize: 1.0
+  # Train/eval decay split. Training uses 0.9. Eval decay is set to 0.99 to
+  # match the sudoku/maze configs (per-experiment choice); the original
+  # state-tracking per-k eval used 0.95. The optimizer selects by self.training.
+  stepsize_decay_train: 0.9
+  stepsize_decay_eval: 0.99
+  decay_patience: 5          # A5: 5  |  S5: 10
+  eps: 1.0e-8
+  # FP-iterate init std, set to 6.0 to match the sudoku/maze configs
+  # (per-experiment choice); the original state-tracking used the default 1.0.
+  init_std: 6.0
+  additive_noise_std: 0.0
+
+  # Inert under max_iter_dist: det (only used by the gamma/expon schedules);
+  # kept for parity with the original config.
+  gamma_alpha: 4.0
+  gamma_scale: 16.6666666667
+  expon_scale: 72.1347520444
+  n_decode_steps: 0
+
+  softmax_temp: 1.0
+  mlp_t: false
+  no_ACT_continue: true
+  normalize_input_injection: false
+  variational_dropout: 0.0
+  weight_dropout: 0.0
+
+  loss:
+    loss_type: stablemax_cross_entropy
+    # Q-head disabled: halting is fixed-point (residue < fp_thresh), not ACT.
+    q_loss_coeff: 0.0
+    deep_supervision: true
