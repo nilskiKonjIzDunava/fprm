@@ -20,6 +20,9 @@ Usage (from the repo root; same Hydra syntax as pretrain.py):
     # also dump the predictions (written to <checkpoint_path>/step_<N>_all_preds.0)
     ... +checkpoint_path=outputs/infer-s5 '+eval_save_outputs=[preds]'
 
+    # evaluate only 1000 evenly spaced test puzzles (one every ~N/1000) instead of all
+    ... +n_subset=1000
+
 The test split of `data_paths` (or `data_paths_test`) must have been built with
 dataset/build_*.py, exactly as for training. Private repos: set HF_TOKEN.
 """
@@ -27,16 +30,69 @@ import os
 import re
 import json
 
+import numpy as np
 import torch
 import hydra
+from torch.utils.data import DataLoader
 from omegaconf import DictConfig, OmegaConf
 from huggingface_hub import hf_hub_download
 
-from pretrain import TrainState, create_dataloader, create_evaluators, evaluate
+from pretrain import TrainState, create_evaluators, evaluate
 from pretrain_config import PretrainConfig
+from puzzle_dataset import PuzzleDataset, PuzzleDatasetConfig
 from utils.flop_profiler import FlopProfiler
 from utils.functions import load_model_class
 from plots.io import write_curves
+
+
+class SubsetPuzzleDataset(PuzzleDataset):
+    """PuzzleDataset whose (test) data is thinned to `n_subset` evenly spaced examples.
+
+    With n_subset=1000 on the ~423k Sudoku-Extreme test puzzles this keeps one
+    puzzle every ~423 (indices floor(i * N / n_subset)). Only valid for datasets
+    with one example per puzzle (sudoku, maze, state tracking), which is checked.
+    """
+
+    def __init__(self, config: PuzzleDatasetConfig, split: str = "test", n_subset=None):
+        super().__init__(config, split)
+        self.n_subset = n_subset
+
+    def _lazy_load_dataset(self):
+        if self._data is not None:
+            return
+        super()._lazy_load_dataset()
+        if not self.n_subset:
+            return
+        for set_name, d in self._data.items():  # type: ignore
+            n = len(d["inputs"])
+            assert np.array_equal(d["puzzle_indices"], np.arange(n + 1)), \
+                "n_subset assumes one example per puzzle"
+            k = min(self.n_subset, n)
+            idx = (np.arange(k) * n) // k  # evenly spaced, sorted -> cheap memmap read
+            self._data[set_name] = {
+                "inputs": d["inputs"][idx],
+                "labels": d["labels"][idx],
+                "puzzle_identifiers": d["puzzle_identifiers"][idx],
+                "puzzle_indices": np.arange(k + 1, dtype=d["puzzle_indices"].dtype),
+                "group_indices": np.arange(k + 1, dtype=d["group_indices"].dtype),
+            }
+
+
+def create_test_loader(config: PretrainConfig, n_subset=None):
+    """Same as pretrain.create_dataloader(config, "test", test_set_mode=True, ...), single
+    process, with optional subsampling of the test set."""
+    dataset = SubsetPuzzleDataset(PuzzleDatasetConfig(
+        seed=config.seed,
+        dataset_paths=config.data_paths_test if len(config.data_paths_test) > 0 else config.data_paths,
+        global_batch_size=config.global_batch_size,
+        test_set_mode=True,
+        epochs_per_iter=1,
+        rank=0,
+        num_replicas=1,
+    ), split="test", n_subset=n_subset)
+    loader = DataLoader(dataset, batch_size=None, num_workers=1, prefetch_factor=8,
+                        pin_memory=True, persistent_workers=True)
+    return loader, dataset.metadata
 
 
 def resolve_checkpoint(path: str) -> str:
@@ -97,22 +153,21 @@ def load_weights(model: torch.nn.Module, path: str) -> None:
 
 @hydra.main(config_path="config", config_name="cfg_pretrain", version_base=None)
 def launch(hydra_config: DictConfig):
-    config = PretrainConfig(**OmegaConf.to_container(hydra_config, resolve=True))  # type: ignore
+    raw = OmegaConf.to_container(hydra_config, resolve=True)
+    n_subset = raw.pop("n_subset", None)  # not a PretrainConfig field: +n_subset=1000
+    config = PretrainConfig(**raw)  # type: ignore
     assert config.load_checkpoint, "set +load_checkpoint=<local path> or hf://<org>/<repo>/<file>"
 
     torch.random.manual_seed(config.seed)  # fixed-point init is random (trunc-normal at reset)
 
-    # Data: same loader/metadata path as training, single process.
-    eval_loader, eval_metadata = create_dataloader(
-        config, "test", test_set_mode=True, epochs_per_iter=1,
-        global_batch_size=config.global_batch_size, rank=0, world_size=1,
-    )
+    # Data: same dataset class/metadata as training, single process.
+    eval_loader, eval_metadata = create_test_loader(config, n_subset=n_subset)
     try:
         evaluators = create_evaluators(config, eval_metadata)
     except Exception:
         print("No evaluator found")
         evaluators = []
-    
+
     # Model + weights (load before compile so state-dict keys are unprefixed).
     ckpt_path = resolve_checkpoint(config.load_checkpoint)
     print(f"Loading checkpoint {ckpt_path}")
