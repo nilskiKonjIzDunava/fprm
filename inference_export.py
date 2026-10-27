@@ -23,11 +23,17 @@ Usage (from the repo root; same Hydra syntax as pretrain.py):
     # evaluate only 1000 evenly spaced test puzzles (one every ~N/1000) instead of all
     ... +n_subset=1000
 
+    # per-sequence fixed-point trajectories -> CSV (FPRM; use with +n_subset):
+    # residue and eta every 10 iterations, first step below tolerance, correctness at the
+    # natural stop and at max_iter  ->  <prefix>_trace.csv, <prefix>_summary.csv
+    ... +n_subset=1000 +trace_out=results/sudoku +trace_every=10 [+trace_tol=0.1] [+trace_excel_it=false]
+
 The test split of `data_paths` (or `data_paths_test`) must have been built with
 dataset/build_*.py, exactly as for training. Private repos: set HF_TOKEN.
 """
 import os
 import re
+import csv
 import json
 
 import numpy as np
@@ -37,7 +43,8 @@ from torch.utils.data import DataLoader
 from omegaconf import DictConfig, OmegaConf
 from huggingface_hub import hf_hub_download
 
-from pretrain import TrainState, create_evaluators, evaluate
+from models.losses import IGNORE_LABEL_ID
+from pretrain import TrainState, autocast_ctx, create_evaluators, evaluate
 from pretrain_config import PretrainConfig
 from puzzle_dataset import PuzzleDataset, PuzzleDatasetConfig
 from utils.flop_profiler import FlopProfiler
@@ -151,10 +158,111 @@ def load_weights(model: torch.nn.Module, path: str) -> None:
         )
 
 
+@torch.inference_mode()
+def trace_trajectories(config: PretrainConfig, model, eval_loader, out_prefix: str,
+                       every: int, tol: float, excel_it: bool = True) -> None:
+    """Per-sequence fixed-point diagnostics, written as two CSV files (FPRM only).
+
+    Replaces pretrain.evaluate(): it runs the same model calls, but keeps going until
+    `max_iter_eval` even after the batch has converged, so every sequence is followed
+    for the whole budget. One model call == one fixed-point iteration (eval: n_steps=1).
+
+    <out_prefix>_trace.csv    seq_id, step, residue, eta   (every `every` steps, + step 1 and the last)
+    <out_prefix>_summary.csv  seq_id, first_step_below_tol, correct_at_natural_stop,
+                              correct_at_max_iter, final_residue
+
+    residue_i / eta_i: residue of iterate y_i and the step size used in
+    y_{i+1} = eta_i * f(y_i) + (1 - eta_i) * y_i. "Natural stop" of a sequence = first step
+    whose residue is below `tol`; correctness there uses the predictions returned by that
+    same model call (as the model itself would when halting).
+    """
+    sep, dec = (";", ",") if excel_it else (",", ".")  # Italian Excel: ';' separator, ',' decimal
+
+    def cell(x):
+        if x is None:
+            return ""
+        if isinstance(x, bool):
+            return int(x)
+        if isinstance(x, float):
+            return f"{x:.6g}".replace(".", dec)
+        return x
+
+    os.makedirs(os.path.dirname(out_prefix) or ".", exist_ok=True)
+    f_trace = open(f"{out_prefix}_trace.csv", "w", newline="")
+    f_sum = open(f"{out_prefix}_summary.csv", "w", newline="")
+    w_trace, w_sum = csv.writer(f_trace, delimiter=sep), csv.writer(f_sum, delimiter=sep)
+    w_trace.writerow(["seq_id", "step", "residue", "eta"])
+    w_sum.writerow(["seq_id", "first_step_below_tol", "correct_at_natural_stop",
+                    "correct_at_max_iter", "final_residue"])
+
+    model.set_num_iters()  # eval budget = arch.max_iter_eval, as evaluate() does
+    max_iter = int(model.model.max_iter)  # type: ignore
+    eta0 = float((config.arch.__pydantic_extra__ or {}).get("stepsize", 1.0))
+    seq_offset = 0
+
+    for set_name, batch, _ in eval_loader:
+        batch = {k: v.cuda() for k, v in batch.items()}
+        with torch.device("cuda"):
+            carry = model.initial_carry(batch)
+        labels = batch["labels"]
+        mask = labels != IGNORE_LABEL_ID
+        valid = mask.any(-1).cpu().numpy()  # padding rows of the last batch are dropped
+        B = labels.shape[0]
+        first = torch.zeros(B, dtype=torch.long, device="cuda")   # 0 = never below tol
+        ok_stop = torch.zeros(B, dtype=torch.bool, device="cuda")
+        eta = torch.full((B,), eta0, device="cuda")               # eta_i used by the update at step i
+        step = 0
+
+        while True:
+            with autocast_ctx(config):
+                carry, _, _, _, preds, all_finish = model(carry=carry, batch=batch, return_keys={"preds"})
+            step += 1
+            assert step <= max_iter, f"step {step} exceeded max_iter {max_iter}"
+
+            state = carry.inner_carry.z_L_state
+            res = state["residues"].float()
+            correct = ((preds["preds"] == labels) | ~mask).all(-1)
+
+            newly = (first == 0) & (res < tol)
+            first = torch.where(newly, torch.full_like(first, step), first)
+            ok_stop = torch.where(newly, correct, ok_stop)
+
+            if step == 1 or step % every == 0 or step == max_iter:
+                r, e = res.cpu().numpy(), eta.cpu().numpy()
+                for b in np.flatnonzero(valid):
+                    w_trace.writerow([seq_offset + int(b), step, cell(float(r[b])), cell(float(e[b]))])
+            eta = state["stepsize"].float().view(-1)  # decayed value = eta for the next update
+
+            if all_finish:
+                if step >= max_iter:
+                    break
+                carry.halted.zero_()  # batch converged early: keep iterating, don't let it reset
+
+        first_c, ok_c, fin_c = first.cpu().numpy(), ok_stop.cpu().numpy(), correct.cpu().numpy()
+        res_c = res.cpu().numpy()
+        for b in np.flatnonzero(valid):
+            conv = first_c[b] > 0
+            w_sum.writerow([seq_offset + int(b),
+                            int(first_c[b]) if conv else "",
+                            cell(bool(ok_c[b])) if conv else "",
+                            cell(bool(fin_c[b])),
+                            cell(float(res_c[b]))])
+        seq_offset += int(valid.sum())
+        print(f"traced {seq_offset} sequences")
+
+    f_trace.close()
+    f_sum.close()
+    print(f"Wrote {out_prefix}_trace.csv and {out_prefix}_summary.csv")
+
+
 @hydra.main(config_path="config", config_name="cfg_pretrain", version_base=None)
 def launch(hydra_config: DictConfig):
     raw = OmegaConf.to_container(hydra_config, resolve=True)
     n_subset = raw.pop("n_subset", None)  # not a PretrainConfig field: +n_subset=1000
+    trace_out = raw.pop("trace_out", None)  # +trace_out=results/s5  -> CSV trajectory export
+    trace_every = int(raw.pop("trace_every", 10))
+    trace_tol = raw.pop("trace_tol", None)  # measurement tolerance; default arch.fp_thresh
+    trace_excel_it = bool(raw.pop("trace_excel_it", True))  # ';' separator + ',' decimal
     config = PretrainConfig(**raw)  # type: ignore
     assert config.load_checkpoint, "set +load_checkpoint=<local path> or hf://<org>/<repo>/<file>"
 
@@ -176,6 +284,11 @@ def launch(hydra_config: DictConfig):
     if "DISABLE_COMPILE" not in os.environ:
         model = torch.compile(model)  # type: ignore
     model.eval()
+
+    if trace_out:
+        tol = float(trace_tol) if trace_tol is not None else float(config.arch.__pydantic_extra__.get("fp_thresh", 0.1))  # type: ignore
+        trace_trajectories(config, model, eval_loader, trace_out, trace_every, tol, trace_excel_it)
+        return
 
     m = re.search(r"step_(\d+)", os.path.basename(ckpt_path))
     step = int(m.group(1)) if m else 0
