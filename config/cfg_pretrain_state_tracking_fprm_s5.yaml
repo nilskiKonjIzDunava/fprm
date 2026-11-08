@@ -1,0 +1,127 @@
+# FPRM on state-tracking S5 (symmetric group) — best reproduction config.
+#
+# Single-z fixed-point model. Same as the A5 config
+# (cfg_pretrain_state_tracking_fprm_a5.yaml) EXCEPT the three S5-specific settings:
+#   data_paths           : S5 (2M-sample build)
+#   arch.decay_patience  : 10   (A5 uses 5)
+#   arch.stepsize_decay_train : 0.95   (A5 uses 0.90)
+#
+# stepsize_decay_train=0.95 was the winner of the training-decay sweep on S5:
+# all 3 seeds trained cleanly and it gave the best/most-consistent length-gen
+# (seq-acc@128 0.993 / 0.945 / 0.886, mean 0.941, no collapse). Values >=0.99
+# destabilise training; <=0.90 leaves the weak seed low. Test-time is left at
+# the shared eval-decay 0.99 (untouched — fair across the sweep).
+#
+# Build the dataset first (S5, train_len=32, eval_len=128, 2M train samples):
+#   uv run python dataset/build_state_tracking_dataset.py \
+#       --group S5 --k-train 32 --k-eval-max 128 --train-samples 2000000 \
+#       --output-dir data/state_tracking-S5-train32-eval128-2M
+#
+# Launch with:
+#   python pretrain.py --config-name cfg_pretrain_state_tracking_fprm_s5
+# (set per-run bookkeeping at launch: seed=1 +project_name=... +run_name=... +checkpoint_path=...)
+
+defaults:
+  - arch: fprm
+  - _self_
+
+hydra:
+  output_subdir: null
+
+# Data (S5, 2M-sample train build — the size needed to reproduce)
+data_paths: ['data/state_tracking-S5-train32-eval128-2M']
+data_paths_test: []
+evaluators: []
+
+# Training
+global_batch_size: 1024
+epochs: 50
+eval_interval: 50
+min_eval_interval: 0
+checkpoint_every_eval: true
+
+optimizer: adamw
+lr: 1e-4
+lr_min_ratio: 1.0
+lr_warmup_steps: 0
+weight_decay: 0.01
+beta1: 0.9
+beta2: 0.95
+
+# Puzzle embeddings disabled (puzzle_emb_len/ndim = 0) — inert but required.
+puzzle_emb_lr: 1e-2
+puzzle_emb_weight_decay: 0.01
+
+seed: 1
+ema: false
+ema_rate: 0.999
+freeze_weights: false
+profile_flops: false
+
+# Length-generalisation eval grid: one causal forward per batch, per-k seq-acc.
+k_eval_min: 2
+k_eval_max: 128
+k_eval_step: 4
+
+# Architecture (overrides config/arch/fprm.yaml)
+arch:
+  causal: true
+
+  H_cycles: 3
+  H_layers: 0
+  L_cycles: 4
+  L_layers: 2
+  n_backwards_L: 4
+
+  hidden_size: 512
+  num_heads: 8
+  expansion: 4
+
+  puzzle_emb_len: 0
+  puzzle_emb_ndim: 0
+  pos_encodings: none
+  forward_dtype: bfloat16
+
+  max_iter: 128
+  max_iter_eval: 160
+  max_iter_dist: det
+
+  alpha_1_init: 0.5
+  alpha_2_init: 0.5
+  residual_scale: input-independent
+  outer_only: false
+  norm_type: pre-norm
+  norm_placement: none
+
+  conv_type: conv1d
+  conv_kernel_size: 4
+  conv_bias: false
+
+  fp_thresh: 0.1
+  outlier_quantile: 0.25
+  stepsize: 1.0
+  # S5 winner: train decay 0.95 (vs A5's 0.90). Higher (>=0.99) destabilises
+  # training; lower leaves the weak seed low. Eval decay left at 0.99 (shared).
+  stepsize_decay_train: 0.95
+  stepsize_decay_eval: 0.99
+  decay_patience: 10         # S5 (A5 uses 5)
+  eps: 1.0e-8
+  init_std: 6.0
+  additive_noise_std: 0.0
+
+  gamma_alpha: 4.0
+  gamma_scale: 16.6666666667
+  expon_scale: 72.1347520444
+  n_decode_steps: 0
+
+  softmax_temp: 1.0
+  mlp_t: false
+  no_ACT_continue: true
+  normalize_input_injection: false
+  variational_dropout: 0.0
+  weight_dropout: 0.0
+
+  loss:
+    loss_type: stablemax_cross_entropy
+    q_loss_coeff: 0.0
+    deep_supervision: true

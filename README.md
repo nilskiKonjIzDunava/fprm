@@ -1,7 +1,127 @@
 # fprm
+This code accompanies the paper:\
+\[[Fixed-Point Reasoners: Stable and Adaptive Deep Looped Transformers](https://arxiv.org/abs/2606.18206)\]
 
-The official implementation of the paper *"Fixed-Point Reasoners: Stable and Adaptive Deep Looped Transformers"*.
+<p align="center">
+  <img src="fig1.png" width="760" alt="FPRM vs. TRM: Sudoku-Extreme accuracy vs. compute across difficulty">
+  <br>
+  <em>FPRM vs. TRM on Sudoku-Extreme: despite being non-hierarchical, FPRM scales better with compute and halts at the right point via fixed-points.</em>
+</p>
 
-A beta version of the training code is available on the `dev/training` branch.
+## Installation
 
-Checkpoints for the experiments are available on [Hugging Face](https://huggingface.co/fixed-point-reasoners).
+Requirements: Linux with an NVIDIA GPU (CUDA 12.x driver) and Python 3.11–3.12. Dependencies are managed with [uv](https://docs.astral.sh/uv/).
+
+```bash
+git clone https://github.com/nilskiKonjIzDunava/fprm.git
+cd fprm
+uv sync
+```
+
+`uv sync` creates a project-local `.venv/` and installs everything (PyTorch is pulled from the CUDA 12.9 wheel index). Run commands either via `uv run <cmd>` or after `source .venv/bin/activate` — always from the repository root.
+
+Training logs to Weights & Biases: run `wandb login` first, or set `WANDB_MODE=offline` to disable.
+
+## Usage
+
+### 1. Build the datasets
+
+Datasets are not shipped; build them into `data/` first. Sudoku and Maze download automatically from the Hugging Face Hub:
+
+```bash
+# Sudoku-Extreme: 1000 puzzles x 1000 augmentations
+uv run python dataset/build_sudoku_dataset.py \
+    --output-dir data/sudoku-extreme-1k-aug-1000 --subsample-size 1000 --num-aug 1000
+
+# Maze-Hard 30x30: non-augmented (the default; the 8x augmented build collapses to ~5%)
+uv run python dataset/build_maze_dataset.py \
+    --output-dir data/maze-30x30-hard-1k-noaug
+
+# State-tracking: generated locally from the permutation group (no download).
+# A5 (alternating group) and S5 (symmetric group), 2M training sequences each,
+# trained at length 32 and evaluated on prefixes up to 128.
+uv run python dataset/build_state_tracking_dataset.py \
+    --group A5 --k-train 32 --k-eval-max 128 --train-samples 2000000 \
+    --output-dir data/state_tracking-A5-train32-eval128-2M
+
+uv run python dataset/build_state_tracking_dataset.py \
+    --group S5 --k-train 32 --k-eval-max 128 --train-samples 2000000 \
+    --output-dir data/state_tracking-S5-train32-eval128-2M
+```
+
+### 2. Train
+
+`pretrain.py` is the (Hydra) training entrypoint; the reproduced experiment configs live in `config/`. `arch=fprm` is the paper's model; `trm`, `trm_singlez`, `trm_hier6`, `hrm`, and `transformers_baseline` are also available. `global_batch_size=768` is fixed regardless of GPU count, so results match across these configurations. Sudoku trains on a single GPU as shown below. Maze on multiple GPUs. For the multi-seed runs, set `seed=0`, `seed=1`, `seed=2`.
+
+#### Single-GPU (Sudoku)
+
+The Sudoku config uses `n_backwards_L=6` for 81 tokens per sequence, which fits in a single 40 GB GPU at `global_batch_size=768`. So you can train it without `torchrun`:
+
+```bash
+uv run python pretrain.py --config-name cfg_pretrain_sudoku
+```
+
+Any field can be overridden on the command line — e.g. the seed and W&B naming:
+
+```bash
+uv run python pretrain.py --config-name cfg_pretrain_sudoku \
+    seed=1 +project_name=fprm-sudoku +run_name=my-run +checkpoint_path=checkpoints/my-run
+```
+
+#### Multi-GPU (Maze)
+
+The Maze config uses `n_backwards_L=6` for 900 tokens per sequence, which exceeds a single 40 GB GPU at `global_batch_size=768`. Train it across multiple GPUs with `torchrun` — e.g. 4× A100-80GB on one node, or 8× A100-40GB across two:
+
+```bash
+# 1 node, 4 GPUs
+torchrun --standalone --nproc-per-node=4 \
+    pretrain.py --config-name cfg_pretrain_maze
+
+# 2 nodes x 4 GPUs (one torchrun per node; HEAD_NODE = rank-0 hostname)
+torchrun --nnodes=2 --nproc-per-node=4 \
+    --rdzv-backend=c10d --rdzv-endpoint="$HEAD_NODE:29850" \
+    pretrain.py --config-name cfg_pretrain_maze
+```
+
+#### Single-GPU (State tracking)
+
+State tracking has one config per group — `cfg_pretrain_state_tracking_fprm_a5`
+(alternating group A5) and `cfg_pretrain_state_tracking_fprm_s5` (symmetric group
+S5). Both are small (hidden 512, 2 L-layers, causal attention, no puzzle embedding,
+no positional encoding) and train on a single 40 GB GPU at `global_batch_size=1024`:
+
+```bash
+# A5
+uv run python pretrain.py --config-name cfg_pretrain_state_tracking_fprm_a5
+
+# S5
+uv run python pretrain.py --config-name cfg_pretrain_state_tracking_fprm_s5
+```
+
+The two configs are identical except for the group-specific settings baked in:
+`data_paths`, `arch.decay_patience` (A5: 5, S5: 10), and `arch.stepsize_decay_train`
+(A5: 0.90, S5: 0.95). As above, override the seed and W&B bookkeeping on the command
+line for multi-seed runs:
+
+```bash
+uv run python pretrain.py --config-name cfg_pretrain_state_tracking_fprm_s5 \
+    seed=1 +project_name=fprm-state-tracking +run_name=my-run +checkpoint_path=checkpoints/my-run
+```
+
+## Citation
+
+```bibtex
+@misc{movahedi2026fixedpointreasonersstableadaptive,
+      title={Fixed-Point Reasoners: Stable and Adaptive Deep Looped Transformers}, 
+      author={Sajad Movahedi and Vera Milovanović and Shlomo Libo Feigin and Alexander Theus and Thomas Hofmann and Valentina Boeva and T. Konstantin Rusch and Antonio Orvieto},
+      year={2026},
+      eprint={2606.18206},
+      archivePrefix={arXiv},
+      primaryClass={cs.AI},
+      url={https://arxiv.org/abs/2606.18206}, 
+}
+```
+
+## Acknowledgments
+
+The puzzle tasks built on [TRM](https://github.com/SamsungSAILMontreal/TinyRecursiveModels) and state-tracking on [FP-RNN](https://github.com/dr-faustus/fp-rnn)
